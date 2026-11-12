@@ -1,0 +1,1 @@
+export PYTHONIOENCODING=utf-8 HF_HOME=D:/LiteDuplex/cache/huggingface TORCH_HOME=D:/LiteDuplex/cache/torch CUDA_CACHE_PATH=D:/LiteDuplex/cache/cuda TMP=D:/LiteDuplex/cache/tmp TEMP=D:/LiteDuplex/cache/tmp TRITON_CACHE_DIR=D:/LiteDuplex/cache/triton PYTHONPYCACHEPREFIX=D:/LiteDuplex/cache/pycache

@@ -1,0 +1,21 @@
+# Python environments and caches (created by start.bat / app.py)
+.venv/
+.venv_tts/
+__pycache__/
+*.pyc
+
+# Downloaded on first run
+models/
+cache/
+tools/llama/
+tools/llama-src/
+
+# UI build
+ui/node_modules/
+ui/dist/
+
+# Local settings: config.json is generated from DEFAULT_CONFIG in app.py on first run
+config.json
+.claude/
+adapter_config.json
+*.bak_orig

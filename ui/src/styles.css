@@ -1,0 +1,266 @@
+:root {
+  --bg: #000;
+  --text: #f5f5f7;
+  --muted: #86868b;
+  --faint: #48484a;
+  --accent: #2997ff;
+  --font: "SF Pro Display", -apple-system, "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --spring: cubic-bezier(0.16, 1, 0.3, 1);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* ---------- волна-переход ---------- */
+.dw { position: fixed; inset: 0; background: var(--bg); }
+.dw-layer { position: absolute; inset: 0; background: var(--bg); }
+.dw-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+/* ---------- экраны ---------- */
+.screen {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px 0;
+  -webkit-app-region: drag;   /* окно без рамки тянется за любое пустое место */
+}
+.screen button { -webkit-app-region: no-drag; }
+
+.brand { text-align: center; transform: translateY(-4vh); }
+.brand h1 {
+  margin: 0;
+  font-size: clamp(30px, 4vw, 44px);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+.hint {
+  margin: 10px 0 0;
+  font-size: 15px;
+  color: var(--muted);
+  letter-spacing: -0.01em;
+  transition: color 0.4s;
+}
+.hint.loading { animation: breathe 2.4s ease-in-out infinite; }
+
+/* переключатель Eco / Fast — пилюля с ползунком */
+.modes {
+  --eco: #30d158;
+  position: relative;
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
+  margin-top: 26px;
+  padding: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  -webkit-app-region: no-drag;
+  transition: opacity 0.45s var(--spring), filter 0.45s var(--spring), transform 0.45s var(--spring);
+}
+/* гаснет перед волной (PILL_FADE_MS в App.jsx), проявляется после её возврата */
+.modes.gone {
+  opacity: 0;
+  filter: blur(8px);
+  transform: translateY(6px) scale(0.96);
+  pointer-events: none;
+  transition-duration: 0.28s;
+  transition-timing-function: ease-out;
+}
+.modes-thumb {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  width: calc(50% - 4px);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.13);
+  box-shadow: 0 0 0 1px rgba(48, 209, 88, 0.35), 0 0 18px rgba(48, 209, 88, 0.18);
+  transition: transform 0.55s var(--spring), box-shadow 0.45s;
+}
+.modes[data-mode="fast"] .modes-thumb {
+  transform: translateX(100%);
+  box-shadow: 0 0 0 1px rgba(41, 151, 255, 0.4), 0 0 18px rgba(41, 151, 255, 0.2);
+}
+.modes button {
+  position: relative;
+  min-width: 96px;
+  padding: 8px 18px;
+  border: 0;
+  border-radius: 999px;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 7px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+  transition: color 0.35s, opacity 0.35s;
+}
+.modes button:hover:not(:disabled) { color: var(--text); }
+.modes button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.modes button:disabled { cursor: default; }
+.modes button:disabled:not(.on) { opacity: 0.45; }
+.modes button.on { color: var(--text); }
+.modes-name { font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
+.modes-sub { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.modes button.on .modes-sub { color: var(--eco); }
+.modes[data-mode="fast"] button.on .modes-sub { color: var(--accent); }
+
+.dock {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: max(44px, 7vh);
+  display: flex;
+  justify-content: center;
+}
+
+/* кнопка микрофона — как в iOS */
+.mic {
+  position: relative;
+  width: 76px;
+  height: 76px;
+  border: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: #000;
+  background: var(--text);
+  cursor: pointer;
+  box-shadow: 0 0 0 0 rgba(245, 245, 247, 0.25);
+  transition: transform 0.35s var(--spring), opacity 0.4s, box-shadow 0.6s var(--spring);
+}
+.mic:hover { box-shadow: 0 0 0 10px rgba(245, 245, 247, 0.07); }
+.mic:active { transform: scale(0.92); }
+.mic.wait { opacity: 0.35; cursor: default; }
+.mic.wait:hover { box-shadow: none; }
+.ring {
+  position: absolute;
+  inset: -7px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  border-top-color: var(--muted);
+  animation: spin 1.1s linear infinite;
+}
+
+.close {
+  width: 56px;
+  height: 56px;
+  border: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(20px) saturate(1.6);
+  cursor: pointer;
+  transition: transform 0.35s var(--spring), background 0.3s;
+}
+.close:hover { background: rgba(255, 255, 255, 0.18); }
+.close:active { transform: scale(0.9); }
+
+.log {
+  position: absolute;
+  bottom: 12px;
+  left: 16px;
+  right: 16px;
+  margin: 0;
+  font: 11px/1.4 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  color: var(--faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+}
+
+/* ---------- живой режим ---------- */
+.beam { position: absolute; inset: 0; }
+.live { background: var(--bg); }
+
+.pill {
+  position: absolute;
+  top: 46px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+  letter-spacing: 0.01em;
+  transition: color 0.4s;
+}
+.pill .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: background 0.4s, box-shadow 0.4s;
+}
+.pill.user .dot { background: var(--text); box-shadow: 0 0 10px rgba(245, 245, 247, 0.8); }
+.pill.think .dot { animation: breathe 1s ease-in-out infinite; }
+.pill.bot { color: var(--text); }
+.pill.bot .dot { background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+
+.stage {
+  width: min(88vw, 920px);
+  max-height: 58vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  overflow: hidden;
+  transform: translateY(-3vh);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 22%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 22%);
+  transition: opacity 0.5s var(--spring), filter 0.5s var(--spring), transform 0.5s var(--spring);
+}
+.stage.leaving { opacity: 0; filter: blur(14px); transform: translateY(calc(-3vh - 18px)); }
+
+.phrase {
+  margin: 0;
+  /* запас под хвосты букв (у, д, р) и размытие проявления — иначе их срезает край сцены */
+  padding: 0.2em 0 0.35em;
+  text-align: center;
+  font-size: clamp(28px, 4.4vw, 54px);
+  font-weight: 600;
+  line-height: 1.14;
+  letter-spacing: -0.028em;
+  text-wrap: balance;
+}
+
+/* слово проявляется из размытия — как живые субтитры в iOS */
+.word {
+  display: inline-block;
+  opacity: 0;
+  filter: blur(14px);
+  transform: translateY(0.32em) scale(0.97);
+}
+.word.on { animation: word-in 0.9s var(--spring) forwards; }
+.word.dim { transition: opacity 0.5s; }
+.word.on.dim { animation: none; opacity: 0.4; filter: none; transform: none; }
+
+@keyframes word-in {
+  60% { filter: blur(0); }
+  to { opacity: 1; filter: none; transform: none; }
+}
+@keyframes breathe { 50% { opacity: 0.45; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .word.on { animation-duration: 0.01s; }
+  .hint.loading, .ring, .pill.think .dot { animation: none; }
+  .modes-thumb { transition: none; }
+}
