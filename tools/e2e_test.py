@@ -59,6 +59,13 @@ c = cut_mid(story, 0.55)
 part1 = np.concatenate([story[:c], sil(1.4), story[c:]])
 aga = say("Ага, да, понятно.")
 stop = say("Стоп, подожди, у меня вопрос.")
+# long monologue, one sentence with breath pauses mid-phrase (Smart Turn: not finished) —
+# the bot should cut in by itself (CutIn) before it ends
+mono = say("Вот скажи мне честно как ты думаешь мне стоит увольняться или нет потому что я уже месяц об этом "
+           "думаю и жена говорит одно а мама говорит совсем другое а начальник вообще молчит и я не понимаю")
+for f in (0.8, 0.6, 0.4, 0.2):   # с конца, чтобы индексы впереди не сдвигались
+    c = cut_mid(mono, f)
+    mono = np.concatenate([mono[:c], sil(0.5), mono[c:]])
 
 T0 = [0.0]
 out = []
@@ -114,6 +121,9 @@ async def script(mic):
     else:
         ev("bot already finished — can't test interruption by stop-phrase")
     await asyncio.sleep(9.0)
+    mic.q.append(mono)
+    ev(f"USER: long monologue ({len(mono) / 16000:.1f}s, breath pauses) — expect '[Перебиваю]' before it ends")
+    await asyncio.sleep(len(mono) / 16000 + 6.0)
 
 
 class Speaker(FrameProcessor):

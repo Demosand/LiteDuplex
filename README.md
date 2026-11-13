@@ -16,6 +16,7 @@ No cloud and no API keys. Everything runs on your machine.
 ## Highlights
 
 - **Full duplex.** The bot stops as soon as you talk over it with two or more words, or say a stop word such as "stop" or "wait". A short "uh-huh" while it is speaking does not count as an interruption.
+- **It can interrupt you too.** While you talk, the model looks at what you have said so far every 2 seconds and decides, like a person would, whether to cut in. It cuts in when you asked something and keep going, get a fact wrong or go in circles. It does not interrupt a story. When it decides to, it waits for your next breath pause instead of talking over a word. See [Cut-in](#cut-in).
 - **Backchannels and fillers.** While you are talking, the bot reacts with short clips: neutral, surprised, sympathetic or laughing. The LLM picks the kind from what you just said. After a long turn it may say "hmm" while it thinks.
 - **Smart turn-taking.** Silero VAD hears speech, and Smart Turn v3 decides whether you have actually finished. The bot does not jump in during a mid-sentence pause.
 - **Streaming speech recognition.** Whisper transcribes while you speak, so the answer starts quickly.
@@ -45,7 +46,7 @@ flowchart LR
 | Part | Model | Runs on | Notes |
 |---|---|---|---|
 | Speech recognition | [Whisper large-v3-turbo](https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2) (CTranslate2) | GPU, `int8_float16` | Greedy decoding, no temperature fallback |
-| Language model | [Gemma 4 12B it, QAT Q4_0](https://huggingface.co/google/gemma-4-12B-it-qat-q4_0-gguf) | [llama.cpp](https://github.com/ggml-org/llama.cpp) server | Two slots: the conversation and quick side questions don't evict each other's cache |
+| Language model | [Gemma 4 12B it, QAT Q4_0](https://huggingface.co/google/gemma-4-12B-it-qat-q4_0-gguf) | [llama.cpp](https://github.com/ggml-org/llama.cpp) server | Two slots: the conversation and quick side questions don't evict each other's cache. [Replaceable](#use-your-own-model) |
 | Speech synthesis | [Qwen3-TTS 12Hz 0.6B CustomVoice](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice) | GPU, bf16 | Custom decoder loop: static KV cache and one CUDA Graph per frame. RTF ≈ 0.36, first audio in ≈ 170 ms |
 | Turn detection | Silero VAD + Smart Turn v3 | CPU | Via [Pipecat](https://github.com/pipecat-ai/pipecat) |
 
@@ -90,6 +91,31 @@ Click the microphone and start talking. Click × to hang up.
 
 There is also a console mode without the window: run `start.bat`.
 
+## Use your own model
+
+The language model is just a file. Put any chat model in GGUF format into `models/llm/`, remove the old one, and restart.
+
+```
+models/
+└── llm/
+    └── your-model-Q4_K_M.gguf     ← any chat GGUF from Hugging Face
+```
+
+- If several `.gguf` files are in the folder, the most recently added one is used. Vision projectors (`mmproj-*.gguf`) are ignored. For a model split into parts, keep all of them; the first part is loaded.
+- The chat template comes from the GGUF file, so no extra setup is needed.
+- If the folder is empty, Gemma 4 12B is downloaded on start.
+- To point at a file somewhere else, set `llm_gguf` in `config.json` (for example `"models/other/model.gguf"`).
+
+Some options by size. The peak VRAM column is for the whole app in Eco mode, approximate:
+
+| Model | GGUF size | Peak VRAM | Notes |
+|---|---|---|---|
+| [Qwen3-4B-Instruct-2507](https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF) Q4_K_M | 2.5 GB | ≈ 6.5 GB | Fast and light, but noticeably less smart |
+| **[Gemma 4 12B it QAT Q4_0](https://huggingface.co/google/gemma-4-12B-it-qat-q4_0-gguf)** (default) | 7 GB | ≈ 10.5 GB | Good conversationalist, many languages |
+| [Gemma 4 26B-A4B it](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF) Q4 | ~16 GB | — | Mixture of experts. It does not fit fully on a 16 GB card. Offloading experts to the CPU (`--n-cpu-moe` in `start_llamacpp`) is not wired up |
+
+The first two rows were measured. Gemma 4 26B-A4B has not been tested. Speed and VRAM depend on the model size and quantization. Small models (3–4B) answer fast but follow the character and the cut-in rules less reliably.
+
 ## Configuration
 
 `config.json` is created on the first run from `DEFAULT_CONFIG` in [`app.py`](app.py). The most useful keys:
@@ -98,14 +124,26 @@ There is also a console mode without the window: run `start.bat`.
 |---|---|---|
 | `system_prompt` | a casual, ironic friend | The bot's character. Keep the short example lines: small models copy tone from examples better than they follow rules |
 | `vram_mode` | `"eco"` | `"eco"` or `"fast"`. The switch in the window sets it too |
-| `llm_gguf` / `llm_gguf_repo` | Gemma 4 12B QAT | Any chat GGUF works. If the file is missing, it is downloaded from the repo on start. For a smaller GPU, `unsloth/Qwen3-4B-Instruct-2507-GGUF` needs about 4 GB less, but it is noticeably less smart |
+| `llm_gguf` | `""` | Empty means: use the `.gguf` in `models/llm/`. See [Use your own model](#use-your-own-model) |
 | `tts_speaker` / `tts_language` | first voice / `russian` | The list of voices is printed on start |
 | `interrupt_min_words` | `2` | How many words of yours stop the bot mid-sentence |
 | `backchannel`, `backchannel_prob`, `backchannel_clips` | on, 0.5 | Reactions while you speak, with words per reaction kind |
 | `filler`, `filler_words` | on | A short "hmm" before a reply to a long turn |
+| `cut_in`, `cut_in_every`, `cut_in_min_words` | on, `2.0`, `10` | Whether the bot may interrupt you, how often it decides (in seconds), and how many words you must say first |
 | `turn_max_silence` | `2.0` | The bot answers after this much silence, even if Smart Turn is unsure |
 
 > **Language.** The pipeline is currently tuned for **Russian**: Whisper's language, the backchannel words and the UI strings. Gemma 4 and Qwen3-TTS speak many languages. Qwen3-TTS covers English, Chinese, Japanese, Korean, German, French, Russian, Spanish, Portuguese and Italian. To switch, change `Language.RU` in `app.py`, `tts_language`, `backchannel_clips` and `filler_words`.
+
+## Cut-in
+
+`CutIn` in [`duplex.py`](duplex.py) is the turn-end strategy: Smart Turn plus the model's own judgement.
+
+1. While you speak, every `cut_in_every` seconds (once you have said at least `cut_in_min_words` words) it sends the model your words so far and its own last line.
+2. The model answers with a single digit, `1` to cut in or `0` to let you finish. A grammar forces that format. The request runs on a separate llama.cpp slot, so the conversation cache stays warm. It takes about 120 ms.
+3. On `1`, the bot waits for your next breath pause, a 0.2 s VAD silence, and then takes the turn the usual way. It waits for Whisper's final text, then answers.
+4. For 4 seconds after cutting in, the bot needs 3 more words than usual before it stops. That way the tail of your sentence does not cancel its reply, but a real "wait, let me finish" still stops it.
+
+The prompt asks the model to be conservative: interrupt rarely, never during a story. Set `"cut_in": false` to turn it off.
 
 ## Project layout
 
@@ -119,7 +157,7 @@ tools/            benchmarks, an end-to-end dialog test, a mock backend, GIF rec
 
 Useful tools:
 
-- `tools/e2e_test.py` plays a scripted conversation into the pipeline, with no microphone needed. The llama.cpp and TTS servers must be running.
+- `tools/e2e_test.py` plays a scripted conversation into the pipeline, with no microphone needed: a story with a pause, an "uh-huh" and a "stop" over the bot, and a long monologue for cut-in. The llama.cpp and TTS servers must be running.
 - `tools/mock_ui_backend.py` is a fake backend for working on the UI without models.
 - `tools/record/` re-records the GIFs above (`record.cjs`, then `make_gifs.sh`).
 

@@ -106,7 +106,7 @@ export default function App() {
     ? 'Бэкенд остановился — смотри лог ниже'
     : switching === 'down' ? 'Перезапускаю…'
     : ready ? 'Нажми, чтобы поговорить' : status.online ? status.text : 'Запускаю…';
-  const label = { listen: 'Слушаю', user: 'Слушаю', think: 'Думаю', bot: 'Говорю' }[mode];
+  const label = { listen: 'Listening', user: 'Listening', think: 'Thinking', bot: 'Speaking' }[mode];
 
   const idleScreen = (
     <main className="screen idle">

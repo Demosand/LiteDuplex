@@ -16,6 +16,7 @@ LoRA: положи папку с LoRA (ту, где лежит adapter_config.js
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -70,11 +71,10 @@ DEFAULT_CONFIG = {
     "whisper_device": "cuda",   # если Whisper не заработает на видеокарте — поставь "cpu"
     # "llamacpp" — быстрый llama.cpp с GGUF-моделью ниже; "hf" — старый вариант: Gemma + LoRA через transformers
     "llm_backend": "llamacpp",
-    # GGUF-модель для llama.cpp и откуда её скачать, если файла нет. Gemma 4 12B (QAT Q4_0 от Google):
-    # многоязычная, Apache 2.0, живой разговорный тон. Нужен --reasoning off (иначе шаблон включает «размышления»).
-    # Полегче: "llm_gguf": "models/qwen3-4b/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
-    #          "llm_gguf_repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF" (~3 ГБ, но заметно глупее)
-    "llm_gguf": "models/gemma4-12b/gemma-4-12b-it-qat-q4_0.gguf",
+    # Модель ИИ — любой файл .gguf в папке models/llm: положи туда свой (старый убери), перезапусти — всё.
+    # Если папка пуста, скачивается Gemma 4 12B (QAT Q4_0 от Google, Apache 2.0) из llm_gguf_repo.
+    # llm_gguf — явный путь к файлу вместо папки, например "models/my/model.gguf".
+    "llm_gguf": "",
     "llm_gguf_repo": "google/gemma-4-12B-it-qat-q4_0-gguf",
     "llm_ctx": 4096,
     # Для "hf": готовая сжатая модель с вшитой LoRA на Hugging Face; если пусто — Gemma (~24 ГБ) + папка LoRA.
@@ -105,6 +105,10 @@ DEFAULT_CONFIG = {
     "filler_words": ["хм", "так"],
     "filler_prob": 0.35,
     "filler_min_words": 8,          # «хм» только после длинной реплики: на короткую бот и так отвечает за ~0.3 c
+    # Бот сам перебивает: пока ты говоришь, каждые N секунд ИИ решает, вставить ли слово (вступает в паузе-вдохе)
+    "cut_in": True,
+    "cut_in_every": 2.0,
+    "cut_in_min_words": 10,         # не раньше, чем ты сказал столько слов
     "llm_port": 8765,
     "tts_port": 8766,
     "ui_port": 8767,   # окно приложения (ui/) подключается сюда по WebSocket
@@ -239,8 +243,18 @@ def install_tts():
     marker.write_text("ok")
 
 
+LLM_DIR = MODELS / "llm"
+LLM_DEFAULT_FILE = "gemma-4-12b-it-qat-q4_0.gguf"   # имя файла в llm_gguf_repo
+
+
 def llm_gguf(cfg: dict) -> Path:
-    return ROOT / cfg["llm_gguf"]
+    """Файл модели ИИ: llm_gguf из config.json, иначе самый свежий .gguf в models/llm.
+    mmproj (зрение) и не первые части разбитой модели (-00002-of-00003) пропускаем."""
+    if (cfg.get("llm_gguf") or "").strip():
+        return ROOT / cfg["llm_gguf"]
+    found = [p for p in LLM_DIR.glob("*.gguf") if not p.name.lower().startswith("mmproj")
+             and not re.search(r"-000(0[2-9]|[1-9]\d)-of-\d{5}\.gguf$", p.name)]
+    return max(found, key=lambda p: p.stat().st_mtime) if found else LLM_DIR / LLM_DEFAULT_FILE
 
 
 def download_models(cfg: dict, lora_dir):
@@ -315,7 +329,7 @@ def setup_and_launch():
         lora = find_lora(required=not merged)
         print("Модель:", cfg["merged_model"] if merged else f"Gemma + LoRA из {lora}")
     else:
-        print("Модель:", cfg["llm_gguf"])
+        print("Модель:", llm_gguf(cfg).relative_to(ROOT))
     install_main()
     install_tts()
     download_models(cfg, lora)
@@ -844,7 +858,7 @@ def build_processors(cfg: dict):
     from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
     from pipecat.turns.user_turn_strategies import UserTurnStrategies
     sys.path.insert(0, str(ROOT))
-    from duplex import Backchannel, QwenTTSService, SmartInterrupt, StreamingWhisperSTT
+    from duplex import Backchannel, CutIn, QwenTTSService, SmartInterrupt, StreamingWhisperSTT
 
     stt_cls = StreamingWhisperSTT if cfg.get("stream_stt", True) else WhisperSTTService
     whisper_settings = WhisperSTTService.Settings(model=str(MODELS / "whisper"), language=Language.RU)
@@ -892,13 +906,16 @@ def build_processors(cfg: dict):
     context = LLMContext(messages=[{"role": "system", "content": prompt}])
     # Silero VAD слышит речь, Smart Turn v3 решает, что ты договорил. Пока бот молчит — ход начинается
     # с первого слова; пока бот говорит — только с interrupt_min_words слов (или «стоп»), иначе он не замолкает.
+    interrupt = SmartInterrupt(min_words=int(cfg.get("interrupt_min_words", 2)))
+    smart_turn = LocalSmartTurnAnalyzerV3(params=SmartTurnParams(stop_secs=float(cfg.get("turn_max_silence", 2.0))))
+    # CutIn — то же, что Smart Turn, но бот ещё и сам может перебить затянувшийся монолог (нужен потоковый STT)
+    stop = (CutIn(turn_analyzer=smart_turn, stt=stt, context=context, interrupt=interrupt, cfg=cfg)
+            if cfg.get("cut_in", True) and isinstance(stt, StreamingWhisperSTT)
+            else TurnAnalyzerUserTurnStopStrategy(turn_analyzer=smart_turn))
     aggregators = LLMContextAggregatorPair(
         context, user_params=LLMUserAggregatorParams(
             vad_analyzer=SileroVADAnalyzer(),
-            user_turn_strategies=UserTurnStrategies(
-                start=[SmartInterrupt(min_words=int(cfg.get("interrupt_min_words", 2)))],
-                stop=[TurnAnalyzerUserTurnStopStrategy(turn_analyzer=LocalSmartTurnAnalyzerV3(
-                    params=SmartTurnParams(stop_secs=float(cfg.get("turn_max_silence", 2.0)))))]),
+            user_turn_strategies=UserTurnStrategies(start=[interrupt], stop=[stop]),
             empty_user_turn=None))   # не просить «повтори», если Whisper ничего не разобрал
     bc = Backchannel(cfg, stt if isinstance(stt, StreamingWhisperSTT) else None)
     return stt, aggregators.user(), bc, llm, tts, aggregators.assistant()

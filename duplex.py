@@ -29,6 +29,7 @@ from pipecat.services.tts_service import TTSService
 from pipecat.services.whisper.stt import WhisperSTTService
 from pipecat.transcriptions.language import Language
 from pipecat.turns.user_start import MinWordsUserTurnStartStrategy
+from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
 from pipecat.utils.text.base_text_aggregator import Aggregation, TextType
 from pipecat.utils.text.simple_text_aggregator import SimpleTextAggregator
 from pipecat.utils.time import time_now_iso8601
@@ -209,6 +210,7 @@ class SmartInterrupt(MinWordsUserTurnStartStrategy):
     Поддакивание и галлюцинации Whisper не перебивают и в разговор не попадают."""
 
     STOP = {"стоп", "хватит", "подожди", "погоди", "замолчи", "стой", "остановись", "прекрати"}
+    firm_until = 0.0   # бот сам перебил (CutIn) — пару секунд его реплику не сбить хвостом твоей фразы
 
     async def _handle_transcription(self, frame):
         text = frame.text.strip()
@@ -225,13 +227,100 @@ class SmartInterrupt(MinWordsUserTurnStartStrategy):
             await self.report_user_turn_started()
             return
         content = [w for w in words if w not in BACKCHANNEL_WORDS]
-        if len(content) >= self._min_words:
+        if len(content) >= self._min_words + (3 if time.time() < self.firm_until else 0):
             print(f"[Перебивание] ты заговорил ({len(content)} сл.): «{text}»", flush=True)
             await self.report_user_turn_started()
             return
         if isinstance(frame, TranscriptionFrame):
             print(f"[Перебивание] нет — поддакивание поверх речи бота: «{text}»", flush=True)
         await self.trigger_reset_aggregation()
+
+
+CUT_IN_PROMPT = (
+    "Ты собеседник в живом голосовом разговоре.{last} Сейчас говорит человек и ещё не закончил. "
+    "Он уже сказал: «{text}».\n"
+    "Перебил бы его сейчас живой человек? Перебивают редко: если он задал вопрос и тянет, ошибается "
+    "в факте, ходит по кругу, сказал то, на что невозможно промолчать, или явно ждёт реакции. "
+    "Если он просто рассказывает — не перебивай. Ответь одной цифрой: 1 — перебить, 0 — дать договорить.")
+
+
+class CutIn(TurnAnalyzerUserTurnStopStrategy):
+    """Smart Turn + бот сам перебивает собеседника, как живой человек.
+
+    Пока человек говорит, каждые `every` секунд LLM смотрит на уже сказанное (и свою последнюю реплику)
+    и одной цифрой решает, перебить или нет. «Да» срабатывает в ближайшей паузе-вдохе (VAD, 0.2 c),
+    а не посреди слова; дальше всё как при обычном конце хода — ждём финальный текст Whisper.
+    """
+
+    def __init__(self, *, stt, context, interrupt, cfg: dict, **kwargs):
+        super().__init__(**kwargs)
+        self._stt, self._context, self._interrupt = stt, context, interrupt
+        self._every = float(cfg.get("cut_in_every", 2.0))
+        self._min_words = int(cfg.get("cut_in_min_words", 10))
+        self._llm = f"http://127.0.0.1:{cfg['llm_port']}/v1/chat/completions"
+        self._http = httpx.AsyncClient(timeout=1.5)
+        self._watch_task = None
+        self._cut = False
+
+    async def handle_user_turn_started(self):
+        await super().handle_user_turn_started()
+        await self._stop_watch()
+        self._watch_task = self.task_manager.create_task(self._watch(), f"{self}::cut_in")
+
+    async def handle_user_turn_stopped(self):
+        await super().handle_user_turn_stopped()
+        await self._stop_watch()
+
+    async def _stop_watch(self):
+        self._cut = False
+        if self._watch_task:
+            await self.task_manager.cancel_task(self._watch_task)
+            self._watch_task = None
+
+    def _said(self) -> str:
+        live = [self._stt.latest_text] if self._vad_user_speaking and self._stt.latest_text else []
+        return " ".join(self._stt.turn_text + live).strip()
+
+    async def _ask(self, text: str) -> bool:
+        last = next((m["content"] for m in reversed(self._context.messages)
+                     if m.get("role") == "assistant" and isinstance(m.get("content"), str)), "")
+        last = f" Твоя последняя реплика: «{last[-200:]}»." if last else ""
+        try:
+            r = await self._http.post(self._llm, json={
+                "model": "x", "max_tokens": 1, "temperature": 0, "grammar": "root ::= [01]",
+                "id_slot": 1,   # служебный слот, как у поддакивания: кэш разговора не трогаем
+                "messages": [{"role": "user", "content": CUT_IN_PROMPT.format(last=last, text=text[-400:])}]})
+            return r.json()["choices"][0]["message"]["content"].strip()[:1] == "1"
+        except Exception:
+            return False
+
+    async def _watch(self):
+        while True:
+            await asyncio.sleep(self._every)
+            text = self._said()
+            if len(text.split()) < self._min_words or not await self._ask(text):
+                continue
+            self._watch_task = None   # дальше задача завершится сама; отменять её из неё же нельзя
+            self._cut = True
+            print(f"[Перебиваю] «…{text[-80:]}»", flush=True)
+            if not self._vad_user_speaking:   # человек уже в паузе — вступаем сразу
+                await self._cut_now()
+            return
+
+    async def _handle_vad_user_stopped_speaking(self, frame):
+        await super()._handle_vad_user_stopped_speaking(frame)
+        if self._cut:
+            await self._cut_now()
+
+    async def _cut_now(self):
+        self._interrupt.firm_until = time.time() + 4.0
+        self._turn_complete = True   # то же, что «Smart Turn: договорил»; текст Whisper ждём как обычно
+        await self._maybe_report_user_turn_stopped()
+
+    async def cleanup(self):
+        await self._stop_watch()
+        await self._http.aclose()
+        await super().cleanup()
 
 
 # ----------------------------------------------------------------------------- TTS
